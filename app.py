@@ -5,7 +5,6 @@ import onnxruntime as ort
 
 app = Flask(__name__)
 
-# Load YOLOv8 ONNX model
 session = ort.InferenceSession(
     "yolov8n.onnx",
     providers=["CPUExecutionProvider"]
@@ -14,7 +13,6 @@ session = ort.InferenceSession(
 input_name = session.get_inputs()[0].name
 output_name = session.get_outputs()[0].name
 
-# COCO classes (important ones)
 CLASSES = [
     "person","bicycle","car","motorcycle","airplane","bus","train","truck","boat",
     "traffic light","fire hydrant","stop sign","parking meter","bench","bird","cat",
@@ -35,49 +33,47 @@ def home():
 
 @app.route("/detect", methods=["POST"])
 def detect():
-    file = request.files.get("image")
-    if not file:
-        return jsonify({"count": 0, "objects": [], "description": []})
-
+    file = request.files["image"]
     img = cv2.imdecode(np.frombuffer(file.read(), np.uint8), cv2.IMREAD_COLOR)
     h, w = img.shape[:2]
 
-    # Preprocess
     img_resized = cv2.resize(img, (640, 640))
     img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
     img_norm = img_rgb.astype(np.float32) / 255.0
-    img_input = np.transpose(img_norm, (2, 0, 1))
-    img_input = np.expand_dims(img_input, axis=0)
+    img_input = np.transpose(img_norm, (2, 0, 1))[None, :, :, :]
 
-    # Inference
-    outputs = session.run([output_name], {input_name: img_input})[0][0]
+    output = session.run([output_name], {input_name: img_input})[0]
+    preds = np.squeeze(output).T   # ✅ CRITICAL FIX
 
-    detections = []
-    descriptions = []
+    boxes = []
+    labels = []
 
-    for det in outputs:
-        conf = det[4]
-        if conf > 0.4:
-            cls = int(np.argmax(det[5:]))
-            label = CLASSES[cls]
+    for pred in preds:
+        scores = pred[4:]
+        class_id = np.argmax(scores)
+        confidence = scores[class_id]
 
-            x, y, bw, bh = det[:4]
-            x1 = int((x - bw / 2) * w / 640)
-            y1 = int((y - bh / 2) * h / 640)
-            x2 = int((x + bw / 2) * w / 640)
-            y2 = int((y + bh / 2) * h / 640)
+        if confidence > 0.4:
+            cx, cy, bw, bh = pred[:4]
 
-            detections.append({
+            x1 = int((cx - bw / 2) * w / 640)
+            y1 = int((cy - bh / 2) * h / 640)
+            x2 = int((cx + bw / 2) * w / 640)
+            y2 = int((cy + bh / 2) * h / 640)
+
+            label = CLASSES[class_id]
+
+            boxes.append({
                 "label": label,
-                "confidence": float(conf),
+                "confidence": float(confidence),
                 "box": [x1, y1, x2, y2]
             })
-            descriptions.append(label)
+            labels.append(label)
 
     return jsonify({
-        "count": len(detections),
-        "objects": detections,
-        "description": list(set(descriptions))
+        "count": len(boxes),
+        "objects": boxes,
+        "description": list(set(labels))
     })
 
 if __name__ == "__main__":
