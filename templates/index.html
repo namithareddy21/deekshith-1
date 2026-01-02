@@ -10,6 +10,9 @@ body {
     background: #f4f9fb;
     text-align: center;
 }
+h1 {
+    margin: 20px;
+}
 button {
     padding: 12px 25px;
     border: none;
@@ -23,7 +26,7 @@ button {
 .container {
     display: flex;
     justify-content: center;
-    gap: 30px;
+    gap: 40px;
     margin-top: 20px;
 }
 .box {
@@ -32,12 +35,12 @@ button {
     border-radius: 15px;
 }
 video, canvas {
-    width: 360px;
-    height: 270px;
+    width: 320px;
+    height: 240px;
     border-radius: 10px;
 }
 #info {
-    margin-top: 20px;
+    margin-top: 30px;
     font-size: 18px;
 }
 </style>
@@ -47,105 +50,74 @@ video, canvas {
 
 <h1>REAL-TIME OBJECT DETECTION</h1>
 
-<button onclick="startDetection()">Start</button>
-<button onclick="stopDetection()">Stop</button>
+<button onclick="startDetection()">Start Detection</button>
+<button onclick="stopDetection()">Stop Detection</button>
 
 <div class="container">
     <div class="box">
-        <h3>Camera</h3>
+        <h3>Input (Live Camera)</h3>
         <video id="video" autoplay muted></video>
     </div>
 
     <div class="box">
-        <h3>Detection</h3>
+        <h3>Output (Detection)</h3>
         <canvas id="canvas"></canvas>
     </div>
 </div>
 
-<div id="info"></div>
+<div id="info">
+    <p><b>Total Objects Detected:</b> <span id="count">0</span></p>
+    <p id="desc">No objects detected</p>
+</div>
 
 <script>
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
+let video = document.getElementById("video");
+let canvas = document.getElementById("canvas");
+let ctx = canvas.getContext("2d");
+let interval;
 
-let detecting = false;
-let lastDetections = [];
-let lastCounts = {};
-let lastTime = 0;
-const INTERVAL = 300; // ms (≈ 3 FPS)
-
-navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+navigator.mediaDevices.getUserMedia({ video: true })
 .then(stream => video.srcObject = stream);
 
-video.onloadedmetadata = () => {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-};
-
 function startDetection() {
-    detecting = true;
-    requestAnimationFrame(loop);
+    interval = setInterval(sendFrame, 1200);
 }
 
 function stopDetection() {
-    detecting = false;
+    clearInterval(interval);
 }
 
-async function loop(time) {
-    if (!detecting) return;
+function sendFrame() {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
 
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(async blob => {
+        let formData = new FormData();
+        formData.append("image", blob);
 
-    // Draw last boxes (stay visible)
-    drawDetections(lastDetections);
-
-    if (time - lastTime > INTERVAL) {
-        lastTime = time;
-        await detectFrame();
-    }
-
-    requestAnimationFrame(loop);
-}
-
-async function detectFrame() {
-    const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
-    const formData = new FormData();
-    formData.append("image", blob);
-
-    try {
-        const res = await fetch("http://localhost:5000/detect", {
+        let res = await fetch("/detect", {
             method: "POST",
             body: formData
         });
 
-        const data = await res.json();
-        lastDetections = data.objects || [];
-        lastCounts = data.counts || {};
-        updateInfo();
-    } catch (err) {
-        console.error(err);
-    }
-}
+        let data = await res.json();
 
-function drawDetections(objects) {
-    objects.forEach(obj => {
-        const [x1, y1, x2, y2] = obj.box;
-        ctx.strokeStyle = "lime";
-        ctx.lineWidth = 3;
-        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-        ctx.fillStyle = "lime";
-        ctx.font = "16px Arial";
-        ctx.fillText(obj.label, x1, y1 - 5);
-    });
-}
+        document.getElementById("count").innerText = data.count;
+        document.getElementById("desc").innerText =
+            data.description.length ? data.description.join(", ") : "No objects detected";
 
-function updateInfo() {
-    let html = "<b>Detected Objects:</b><br>";
-    for (const key in lastCounts) {
-        html += `${key}: ${lastCounts[key]}<br>`;
-    }
-    document.getElementById("info").innerHTML = html || "No objects";
+        ctx.drawImage(video, 0, 0);
+
+        data.objects.forEach(obj => {
+            let [x1, y1, x2, y2] = obj.box;
+            ctx.strokeStyle = "lime";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+            ctx.fillStyle = "lime";
+            ctx.fillText(obj.label, x1, y1 - 5);
+        });
+    }, "image/jpeg");
 }
 </script>
 
