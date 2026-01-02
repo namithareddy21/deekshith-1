@@ -74,50 +74,77 @@ video, canvas {
 let video = document.getElementById("video");
 let canvas = document.getElementById("canvas");
 let ctx = canvas.getContext("2d");
-let interval;
+let rafId = null;
+let isDetecting = false;
 
 navigator.mediaDevices.getUserMedia({ video: true })
 .then(stream => video.srcObject = stream);
 
+// Resize canvas to match video on load
+video.addEventListener('loadedmetadata', () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+});
+
 function startDetection() {
-    interval = setInterval(sendFrame, 1200);
+    isDetecting = true;
+    detectLoop();
 }
 
 function stopDetection() {
-    clearInterval(interval);
+    isDetecting = false;
+    if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+    }
 }
 
-function sendFrame() {
+async function detectLoop() {
+    if (!isDetecting) return;
+    
+    // Set canvas size
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+    
+    // Clear and draw current frame
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(video, 0, 0);
 
-    canvas.toBlob(async blob => {
-        let formData = new FormData();
-        formData.append("image", blob);
+    // Send frame for detection
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.8));
+    const formData = new FormData();
+    formData.append("image", blob);
 
-        let res = await fetch("/detect", {
+    try {
+        const res = await fetch("/detect", {
             method: "POST",
             body: formData
         });
+        const data = await res.json();
 
-        let data = await res.json();
+        // Update info
+        document.getElementById("count").innerText = data.count || 0;
+        document.getElementById("desc").innerText = 
+            data.description?.length ? data.description.join(", ") : "No objects detected";
 
-        document.getElementById("count").innerText = data.count;
-        document.getElementById("desc").innerText =
-            data.description.length ? data.description.join(", ") : "No objects detected";
+        // Draw bounding boxes (without redrawing video - it's already there)
+        if (data.objects) {
+            data.objects.forEach(obj => {
+                const [x1, y1, x2, y2] = obj.box;
+                ctx.strokeStyle = "lime";
+                ctx.lineWidth = 3;
+                ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+                ctx.fillStyle = "lime";
+                ctx.font = "bold 16px Arial";
+                ctx.fillText(obj.label, x1, y1 - 5);
+            });
+        }
+    } catch (error) {
+        console.error("Detection error:", error);
+    }
 
-        ctx.drawImage(video, 0, 0);
-
-        data.objects.forEach(obj => {
-            let [x1, y1, x2, y2] = obj.box;
-            ctx.strokeStyle = "lime";
-            ctx.lineWidth = 2;
-            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-            ctx.fillStyle = "lime";
-            ctx.fillText(obj.label, x1, y1 - 5);
-        });
-    }, "image/jpeg");
+    // Continue loop smoothly
+    rafId = requestAnimationFrame(detectLoop);
 }
 </script>
 
