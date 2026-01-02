@@ -10,9 +10,6 @@ body {
     background: #f4f9fb;
     text-align: center;
 }
-h1 {
-    margin: 20px;
-}
 button {
     padding: 12px 25px;
     border: none;
@@ -26,7 +23,7 @@ button {
 .container {
     display: flex;
     justify-content: center;
-    gap: 40px;
+    gap: 30px;
     margin-top: 20px;
 }
 .box {
@@ -35,12 +32,12 @@ button {
     border-radius: 15px;
 }
 video, canvas {
-    width: 320px;
-    height: 240px;
+    width: 360px;
+    height: 270px;
     border-radius: 10px;
 }
 #info {
-    margin-top: 30px;
+    margin-top: 20px;
     font-size: 18px;
 }
 </style>
@@ -50,101 +47,105 @@ video, canvas {
 
 <h1>REAL-TIME OBJECT DETECTION</h1>
 
-<button onclick="startDetection()">Start Detection</button>
-<button onclick="stopDetection()">Stop Detection</button>
+<button onclick="startDetection()">Start</button>
+<button onclick="stopDetection()">Stop</button>
 
 <div class="container">
     <div class="box">
-        <h3>Input (Live Camera)</h3>
+        <h3>Camera</h3>
         <video id="video" autoplay muted></video>
     </div>
 
     <div class="box">
-        <h3>Output (Detection)</h3>
+        <h3>Detection</h3>
         <canvas id="canvas"></canvas>
     </div>
 </div>
 
-<div id="info">
-    <p><b>Total Objects Detected:</b> <span id="count">0</span></p>
-    <p id="desc">No objects detected</p>
-</div>
+<div id="info"></div>
 
 <script>
-let video = document.getElementById("video");
-let canvas = document.getElementById("canvas");
-let ctx = canvas.getContext("2d");
-let rafId = null;
-let isDetecting = false;
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
 
-navigator.mediaDevices.getUserMedia({ video: true })
+let detecting = false;
+let lastDetections = [];
+let lastCounts = {};
+let lastTime = 0;
+const INTERVAL = 300; // ms (≈ 3 FPS)
+
+navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
 .then(stream => video.srcObject = stream);
 
-// Resize canvas to match video on load
-video.addEventListener('loadedmetadata', () => {
+video.onloadedmetadata = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-});
+};
 
 function startDetection() {
-    isDetecting = true;
-    detectLoop();
+    detecting = true;
+    requestAnimationFrame(loop);
 }
 
 function stopDetection() {
-    isDetecting = false;
-    if (rafId) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-    }
+    detecting = false;
 }
 
-async function detectLoop() {
-    if (!isDetecting) return;
-    
-    // Set canvas size
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    
-    // Clear and draw current frame
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(video, 0, 0);
+async function loop(time) {
+    if (!detecting) return;
 
-    // Send frame for detection
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.8));
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Draw last boxes (stay visible)
+    drawDetections(lastDetections);
+
+    if (time - lastTime > INTERVAL) {
+        lastTime = time;
+        await detectFrame();
+    }
+
+    requestAnimationFrame(loop);
+}
+
+async function detectFrame() {
+    const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
     const formData = new FormData();
     formData.append("image", blob);
 
     try {
-        const res = await fetch("/detect", {
+        const res = await fetch("http://localhost:5000/detect", {
             method: "POST",
             body: formData
         });
+
         const data = await res.json();
-
-        // Update info
-        document.getElementById("count").innerText = data.count || 0;
-        document.getElementById("desc").innerText = 
-            data.description?.length ? data.description.join(", ") : "No objects detected";
-
-        // Draw bounding boxes (without redrawing video - it's already there)
-        if (data.objects) {
-            data.objects.forEach(obj => {
-                const [x1, y1, x2, y2] = obj.box;
-                ctx.strokeStyle = "lime";
-                ctx.lineWidth = 3;
-                ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-                ctx.fillStyle = "lime";
-                ctx.font = "bold 16px Arial";
-                ctx.fillText(obj.label, x1, y1 - 5);
-            });
-        }
-    } catch (error) {
-        console.error("Detection error:", error);
+        lastDetections = data.objects || [];
+        lastCounts = data.counts || {};
+        updateInfo();
+    } catch (err) {
+        console.error(err);
     }
+}
 
-    // Continue loop smoothly
-    rafId = requestAnimationFrame(detectLoop);
+function drawDetections(objects) {
+    objects.forEach(obj => {
+        const [x1, y1, x2, y2] = obj.box;
+        ctx.strokeStyle = "lime";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        ctx.fillStyle = "lime";
+        ctx.font = "16px Arial";
+        ctx.fillText(obj.label, x1, y1 - 5);
+    });
+}
+
+function updateInfo() {
+    let html = "<b>Detected Objects:</b><br>";
+    for (const key in lastCounts) {
+        html += `${key}: ${lastCounts[key]}<br>`;
+    }
+    document.getElementById("info").innerHTML = html || "No objects";
 }
 </script>
 
