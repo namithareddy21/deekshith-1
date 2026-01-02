@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 import os
+from collections import Counter
 
 app = Flask(__name__)
 
@@ -34,14 +35,11 @@ CLASSES = [
 ]
 
 # ---------------------------
-# Non-Maximum Suppression
+# NMS
 # ---------------------------
-def nms(boxes, scores, score_thresh=0.4, iou_thresh=0.5):
+def nms(boxes, scores, score_thresh=0.25, iou_thresh=0.45):
     indices = cv2.dnn.NMSBoxes(
-        boxes,
-        scores,
-        score_thresh,
-        iou_thresh
+        boxes, scores, score_thresh, iou_thresh
     )
     return indices
 
@@ -55,7 +53,7 @@ def index():
 @app.route("/detect", methods=["POST"])
 def detect():
     if "image" not in request.files:
-        return jsonify({"count": 0, "objects": [], "description": []})
+        return jsonify({"objects": [], "counts": {}})
 
     file = request.files["image"]
     img = cv2.imdecode(np.frombuffer(file.read(), np.uint8), cv2.IMREAD_COLOR)
@@ -65,22 +63,25 @@ def detect():
     img_resized = cv2.resize(img, (640, 640))
     img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
     img_norm = img_rgb.astype(np.float32) / 255.0
-    img_input = np.transpose(img_norm, (2, 0, 1))[None, :, :, :]
+    img_input = np.transpose(img_norm, (2, 0, 1))[None]
 
     # Inference
     outputs = session.run([output_name], {input_name: img_input})[0]
-    preds = np.squeeze(outputs).T
+    preds = np.squeeze(outputs).T  # (8400, 85)
 
     boxes = []
     confidences = []
     class_ids = []
 
     for pred in preds:
-        class_scores = pred[4:]
+        obj_conf = pred[4]
+        class_scores = pred[5:]
         class_id = np.argmax(class_scores)
-        confidence = class_scores[class_id]
+        class_conf = class_scores[class_id]
 
-        if confidence > 0.4:
+        confidence = obj_conf * class_conf
+
+        if confidence > 0.25:
             cx, cy, bw, bh = pred[:4]
 
             x = int((cx - bw / 2) * w / 640)
@@ -94,7 +95,7 @@ def detect():
 
     indices = nms(boxes, confidences)
 
-    results = []
+    objects = []
     labels = []
 
     if len(indices) > 0:
@@ -102,7 +103,7 @@ def detect():
             x, y, bw, bh = boxes[i]
             label = CLASSES[class_ids[i]]
 
-            results.append({
+            objects.append({
                 "label": label,
                 "confidence": round(confidences[i], 2),
                 "box": [x, y, x + bw, y + bh],
@@ -111,10 +112,11 @@ def detect():
             })
             labels.append(label)
 
+    counts = dict(Counter(labels))
+
     return jsonify({
-        "count": len(results),
-        "objects": results,
-        "description": list(set(labels))
+        "objects": objects,
+        "counts": counts
     })
 
 # ---------------------------
